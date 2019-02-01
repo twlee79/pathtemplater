@@ -116,9 +116,12 @@ _PROGRAM_NAME = 'pathtemplater'
 #
 # -------------------------------------------------------------------------------
 
-_PROGRAM_VERSION = '1.0.0.dev2'
+_PROGRAM_VERSION = '1.0.0.dev3'
 # -------------------------------------------------------------------------------
 # ### Change log
+#
+# version 1.0.0.dev3 2019-02-01
+# : Altered method of adding presets, now supports arbitrary function calls.
 #
 # version 1.0.0.dev2 2019-02-01
 # : Added some additional functions to PathTemplater: remove_affix,
@@ -297,48 +300,126 @@ class PathTemplater:
                     PathTemplater._set_altsuffix_boundmethod(self, name, altsuffix, altsuffix_append))
     def add_preset_formats(self,preset_formats):
         """
-        Add `preset_formats` to this object. Keys named `_topdir` and
-        `_altsuffix`
+        Add `preset_formats` to this object, in the format
+        ```
+        {preset1_name : {preset1_format1 : preset1_format1_value,
+                         preset1_format2 : preset1_format2_value,
+                         ...
+                         },
+         preset2_name : {preset2_format1 : preset2_format1_value,
+                         ...
+                         },
+                         ...
+        }
+
+        `preset_name` is used as a function name for activating the preset.
+
+        `preset_format_value` can be:
+
+        1) A tuple of a list and dict `([],{})`. If so, then `preset_format`
+        is expected to be a callable function within the,
+        object that is called using the list and tuple as `*args` and
+        `**kwargs`. This is 'callable' format.
+
+        2) A simple value. `preset_format` is used a placeholder name,
+        and the `preset_format_value` is the value of the placeholder used to
+        when formatting the object. This is equivalent to
+        `add_to_dict(preset_format, preset_format_value)`. This is
+        'standard' format.
+
+        3) An iterable collection. `preset_format` is used a placeholder name
+        and the object is expanded with all values of `preset_format_value`.
+        This is 'expandable' format.
+
+        Standard and callable formats can be mixed in the same preset, and
+        the preset function will return a copy of the object with any preset
+        defined functions called and placeholders add to the format dictionary
+
+        Expandable formats cannot be mixed with callable formats (it can
+        be mixed with standard formats). The preset function will return a
+        list of formatted strings when the preset function is called.
+
+        Example of adding preset containing only a standard format (`use()`
+        converts the returned derived object to a string):
 
         >>> foobar_templater = PathTemplater().create("foo/bar/myfile_{animal}.foobar")
         >>> foobar_templater.add_preset_formats({'cat': {'animal': 'cat'}})
         >>> foobar_templater.cat().use()
         'foo/bar/myfile_cat.foobar'
+
+        Example of adding a preset containing only an expandable format:
         >>> foobar_templater.add_preset_formats({'all_animals': {'animal': ['cat','dog']}})
         >>> foobar_templater.all_animals()
         ['foo/bar/myfile_cat.foobar', 'foo/bar/myfile_dog.foobar']
 
+        Example of adding preset containing callable formats. First construct a
+        templater object with multiple top directories `foo` and `bar`,
+        accessed by the `foobardir()` and `boobardir()` functions:
         >>> foobar_templater = PathTemplater({'foobar':'foo','boobar':'boo'}).create("bar/myfile_{animal}.foobar")
         >>> foobar_templater.foobardir().use()
         'foo/bar/myfile_{animal}.foobar'
+
+        Add alternate suffixes to the templater. This allows `.boobar` suffix to
+        be used by calling `boobarfile()`. Since this suffix corresponds to the
+        `boobar` top directory, using it will alter top directory to that
+        defined by `boobardir()`. `tarfile` will append a `.tar` suffix.
         >>> foobar_templater.add_alt_suffixes({'boobar':'.boobar', 'tar':'+.tar'})
         >>> foobar_templater.boobarfile().use()
         'boo/bar/myfile_{animal}.boobar'
         >>> foobar_templater.foobardir().tarfile().use()
         'foo/bar/myfile_{animal}.foobar.tar'
-        >>> foobar_templater.add_preset_formats({'cat_tar_in_foobar' : {'animal' : 'cat', '_altsuffix':'tar','_topdir' : 'foobar'}})
+
+        Create a preset containing a standard format, and two callable formats.
+        This effectively stacks storing the value of placeholder `animal` as
+        `cat`, a call to the `forbardir()` function and a call to the `tarfile()`
+        function in a single call to the `cat_tar_in_foobar()` function:
+        >>> foobar_templater.add_preset_formats({'cat_tar_in_foobar' : {'animal' : 'cat', 'foobardir': ([],{}), 'tarfile' : ([],{}) } })
         >>> foobar_templater.cat_tar_in_foobar().use()
         'foo/bar/myfile_cat.foobar.tar'
-        >>> foobar_templater.add_preset_formats({'will_fail' : {'_altsuffix':'zip'}})
+
+        Callable preset formats can specify functions in the object that require
+        parameters by supplying these in the list or dict provided. Here, the
+        `new_template()` function is called with a parameter in the
+        `yourfile_template()` preset:
+        >>> foobar_templater.add_preset_formats({'yourfile_template' : {'new_template':(['yourfile_{animal}'],{}) }})
+        >>> foobar_templater.foobardir().yourfile_template().use()
+        'foo/bar/yourfile_{animal}.foobar'
+
+        Callable preset formats cannot be combined with expandable formats:
+        >>> foobar_templater.add_preset_formats({'yourfile_template' : {'new_template':(['yourfile_{animal}'],{}), 'all_animals' : ['cat','dog'] }})
+        Traceback (most recent call last):
+        ...
+        ValueError: Cannot use callable with expand()-style format
+
+        An of course, the function specified in the format must exist in the
+        object (and be callable with the provided parameters, if any):
+        >>> foobar_templater.add_preset_formats({'will_fail' : {'zipfile':([],{})}})
         >>> foobar_templater.will_fail().use()
         Traceback (most recent call last):
         ...
-        ValueError: Object does not have function zipfile
-
-
+        ValueError: Preset value zipfile:([], {}) provided but could not find function zipfile
         """
         if preset_formats: # TODO add type checking
             for preset_name, format_dict in preset_formats.items():
                 # check if any of the provided values in format_dict is a collection
                 have_iterable = False
+                have_callable = False
                 for format_value in format_dict.values():
                     if isinstance(format_value, collections.Iterable) and not isinstance(format_value, str):
-                        have_iterable = True
-                        break
+                        # ([],{}) -> specifies funciton to call
+                        if PathTemplater._is_funcparams_tuple(format_value):
+                            have_callable = True
+                        else:
+                            have_iterable = True
                 if have_iterable:
+                    if have_callable:
+                        raise ValueError("Cannot use callable with expand()-style format")
                     the_func = PathTemplater._preset_expand_boundmethod
                 else:
-                    the_func = PathTemplater._preset_addtodict_boundmethod
+                    if have_callable:
+                        the_func = PathTemplater._preset_addtodict_withcalls_boundmethod
+                    else:
+                        the_func = PathTemplater._preset_addtodict_boundmethod
                 setattr(self, preset_name, the_func(self, **format_dict))
     def _reset_topdir(self):
         """
@@ -405,6 +486,12 @@ class PathTemplater:
         new_obj._filename_affix = filename_affix
         new_obj._format_dict.update(format_dict)
         return new_obj
+    @staticmethod
+    def _is_funcparams_tuple(x):
+        """
+        Return `True` if `x` is tuple of list and dict, i.e `([],{})`.
+        """
+        return isinstance(x,tuple) and len(x)==2 and isinstance(x[0],list) and isinstance(x[1],dict)
     @staticmethod
     def _get_settopdir_methodname(topdir_name):
         """
@@ -473,36 +560,39 @@ class PathTemplater:
         Generate bound method of `instance._set_suffix(altsuffix_name, altsuffix_value, altsuffix_append)`.
         """
         return PathTemplater._bound_method(lambda self: PathTemplater._set_altsuffix(self, altsuffix_name, altsuffix_value, altsuffix_append), instance)
-    def _add_to_dict2(self,**kwargs):
+    def _add_to_dict_with_calls(self,**kwargs):
         """
         Generate a copy of the object that contains `**kwargs` added to the
         `format_dict` for wildcard resolving. Special processing to parse
-        `_topdir` and `_altsuffix` parameters, these will add calls to
-        corresponding top directory and alternate suffix functions given
-        by the parameter values.
+        parameters with `([],{})` values, these will add calls to
+        corresponding function named by parameter name, and with provided
+        values as `*args` and `**kwargs`
 
         """
         new_obj = copy.deepcopy(self)
         used_items = set()
-        for format_key,format_value in kwargs.items():
-            if format_key == "_topdir":
-                the_funcname = PathTemplater._get_settopdir_methodname(format_value)
-            elif format_key == "_altsuffix":
-                the_funcname = PathTemplater._get_setfilesuffix_methodname(format_value)
+        for param,param_value in kwargs.items():
+            if PathTemplater._is_funcparams_tuple(param_value):
+                the_funcname = param
             else:
                 the_funcname = None
             if the_funcname:
                 the_func = getattr(new_obj, the_funcname, None)
                 if the_func is None:
-                    raise ValueError("Object does not have function {}".format(the_funcname))
-                new_obj = the_func()
-                used_items.add(format_key)
+                    raise ValueError("Preset value {}:{} provided but could not find function {}".format(param, param_value, the_funcname))
+                call_args,call_kwargs= param_value
+                new_obj = the_func(*call_args,**call_kwargs)
+                used_items.add(param)
         for item in used_items:
             kwargs.pop(item, None)
+        if not kwargs: return new_obj
         return new_obj.add_to_dict(**kwargs)
     @staticmethod
     def _preset_addtodict_boundmethod(instance, **kwargs):
-        return PathTemplater._bound_method(lambda self: PathTemplater._add_to_dict2(self, **kwargs), instance)
+        return PathTemplater._bound_method(lambda self: PathTemplater.add_to_dict(self, **kwargs), instance)
+    @staticmethod
+    def _preset_addtodict_withcalls_boundmethod(instance, **kwargs):
+        return PathTemplater._bound_method(lambda self: PathTemplater._add_to_dict_with_calls(self, **kwargs), instance)
     @staticmethod
     def _preset_expand_boundmethod(instance, **kwargs):
         return PathTemplater._bound_method(lambda self: PathTemplater.expand(self, partial = True, **kwargs), instance)
