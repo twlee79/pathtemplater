@@ -116,11 +116,17 @@ _PROGRAM_NAME = 'pathtemplater'
 #
 # -------------------------------------------------------------------------------
 
-_PROGRAM_VERSION = '1.0.0dev1'
+_PROGRAM_VERSION = '1.0.0.dev2'
 # -------------------------------------------------------------------------------
 # ### Change log
 #
-# version 1.0.dev1 2019-01-30
+# version 1.0.0.dev2 2019-02-01
+# : Added some additional functions to PathTemplater: remove_affix,
+#   get_directory_aspathlib, get_directory, apply_format, add_alt_suffixes,
+#   add_preset_formats.
+# : preset_formats now supports specifying _topdir and _altsuffix.
+#
+# version 1.0.0dev1 2019-01-30
 # : Working version, partially tested with doctest
 # -------------------------------------------------------------------------------
 
@@ -152,7 +158,7 @@ class _AsIsFormat:
 
 class _PartialDict(dict):
     """
-    Simple derived dict that returns an as-is formatter for missing keysself.
+    Simple derived dict that returns an as-is formatter for missing keys.
 
     To partially format a string use, e.g.:
     `string.Formatter().vformat('{name} {job} {bye}',(),_PartialDict(name="me", job="you"))`
@@ -160,6 +166,17 @@ class _PartialDict(dict):
     """
     def __missing__(self, key):
         return _AsIsFormat(key)
+
+class _TrackingPartialDict(_PartialDict):
+    """
+    Subclass of `_PartialDict` that tracks usage of `__getitem__`.
+    """
+    def __init__(self, *args, **kwargs):
+        self.used_items = set()
+        super(_TrackingPartialDict, self).__init__(*args, **kwargs)
+    def __getitem__(self, index):
+        self.used_items.add(index)
+        return super(_TrackingPartialDict, self).__getitem__(index)
 
 class PathTemplater:
     """
@@ -230,6 +247,7 @@ class PathTemplater:
         e.g. `{R1 : path_for_R1, R2 : path_for_R2}`.
         * `pformat(), format, expand` : generate path(s) with partially
         resolved, resolved or expanded wildcards.
+
     """
     def __init__(self, top_directories = None, alt_suffixes = None,
                  preset_formats = None):
@@ -253,6 +271,20 @@ class PathTemplater:
             for name, value in top_directories.items():
                 setattr(self, PathTemplater._get_settopdir_methodname(name),
                     PathTemplater._set_topdir_boundmethod(self, name, value))
+        self.add_alt_suffixes(alt_suffixes)
+        self.add_preset_formats(preset_formats)
+    def add_alt_suffixes(self, alt_suffixes):
+        """
+        Add `all_suffixes` to this object.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
+        >>> foobar_templater.add_alt_suffixes({'boobar':'.boobar', 'tar':'+.tar'})
+        >>> foobar_templater.boobarfile().use()
+        'foo/bar/myfile.boobar'
+        >>> foobar_templater.tarfile().use()
+        'foo/bar/myfile.foobar.tar'
+
+        """
         if alt_suffixes:
             for name, value in alt_suffixes.items():
                 if value[0]=='+':
@@ -263,6 +295,38 @@ class PathTemplater:
                     altsuffix = value
                 setattr(self, PathTemplater._get_setfilesuffix_methodname(name),
                     PathTemplater._set_altsuffix_boundmethod(self, name, altsuffix, altsuffix_append))
+    def add_preset_formats(self,preset_formats):
+        """
+        Add `preset_formats` to this object. Keys named `_topdir` and
+        `_altsuffix`
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile_{animal}.foobar")
+        >>> foobar_templater.add_preset_formats({'cat': {'animal': 'cat'}})
+        >>> foobar_templater.cat().use()
+        'foo/bar/myfile_cat.foobar'
+        >>> foobar_templater.add_preset_formats({'all_animals': {'animal': ['cat','dog']}})
+        >>> foobar_templater.all_animals()
+        ['foo/bar/myfile_cat.foobar', 'foo/bar/myfile_dog.foobar']
+
+        >>> foobar_templater = PathTemplater({'foobar':'foo','boobar':'boo'}).create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.foobardir().use()
+        'foo/bar/myfile_{animal}.foobar'
+        >>> foobar_templater.add_alt_suffixes({'boobar':'.boobar', 'tar':'+.tar'})
+        >>> foobar_templater.boobarfile().use()
+        'boo/bar/myfile_{animal}.boobar'
+        >>> foobar_templater.foobardir().tarfile().use()
+        'foo/bar/myfile_{animal}.foobar.tar'
+        >>> foobar_templater.add_preset_formats({'cat_tar_in_foobar' : {'animal' : 'cat', '_altsuffix':'tar','_topdir' : 'foobar'}})
+        >>> foobar_templater.cat_tar_in_foobar().use()
+        'foo/bar/myfile_cat.foobar.tar'
+        >>> foobar_templater.add_preset_formats({'will_fail' : {'_altsuffix':'zip'}})
+        >>> foobar_templater.will_fail().use()
+        Traceback (most recent call last):
+        ...
+        ValueError: Object does not have function zipfile
+
+
+        """
         if preset_formats: # TODO add type checking
             for preset_name, format_dict in preset_formats.items():
                 # check if any of the provided values in format_dict is a collection
@@ -409,21 +473,75 @@ class PathTemplater:
         Generate bound method of `instance._set_suffix(altsuffix_name, altsuffix_value, altsuffix_append)`.
         """
         return PathTemplater._bound_method(lambda self: PathTemplater._set_altsuffix(self, altsuffix_name, altsuffix_value, altsuffix_append), instance)
+    def _add_to_dict2(self,**kwargs):
+        """
+        Generate a copy of the object that contains `**kwargs` added to the
+        `format_dict` for wildcard resolving. Special processing to parse
+        `_topdir` and `_altsuffix` parameters, these will add calls to
+        corresponding top directory and alternate suffix functions given
+        by the parameter values.
+
+        """
+        new_obj = copy.deepcopy(self)
+        used_items = set()
+        for format_key,format_value in kwargs.items():
+            if format_key == "_topdir":
+                the_funcname = PathTemplater._get_settopdir_methodname(format_value)
+            elif format_key == "_altsuffix":
+                the_funcname = PathTemplater._get_setfilesuffix_methodname(format_value)
+            else:
+                the_funcname = None
+            if the_funcname:
+                the_func = getattr(new_obj, the_funcname, None)
+                if the_func is None:
+                    raise ValueError("Object does not have function {}".format(the_funcname))
+                new_obj = the_func()
+                used_items.add(format_key)
+        for item in used_items:
+            kwargs.pop(item, None)
+        return new_obj.add_to_dict(**kwargs)
     @staticmethod
     def _preset_addtodict_boundmethod(instance, **kwargs):
-        return PathTemplater._bound_method(lambda self: PathTemplater.add_to_dict(self, **kwargs), instance)
+        return PathTemplater._bound_method(lambda self: PathTemplater._add_to_dict2(self, **kwargs), instance)
     @staticmethod
     def _preset_expand_boundmethod(instance, **kwargs):
         return PathTemplater._bound_method(lambda self: PathTemplater.expand(self, partial = True, **kwargs), instance)
-    def use(self):
+    def get_directory_aspathlib(self):
         """
-        Generates the path as a string, replacing any wildcards for which
-        values have been provided in the `format_dict`.
+        Generate a path consisting only of the  directory and directory
+        components of the path as a pathlib.Path.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
+        >>> foobar_templater.get_directory_aspathlib() == pathlib.Path('foo/bar')
+        True
+
         """
         if not self._is_initialized():
             raise ValueError("Cannot use() PathTemplater - not fully initialized")
         path = pathlib.Path(self._topdir_value)
-        path = path / self._directory / self._get_combined_template_affix()
+        return path / self._directory
+    def get_directory(self):
+        """
+        Generate a path consisting only of the  directory and directory
+        components of the path as a string.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
+        >>> foobar_templater.get_directory()
+        'foo/bar'
+
+        """
+        return self.get_directory_aspathlib().__str__()
+    def use(self):
+        """
+        Generates the path as a string, replacing any wildcards for which
+        values have been provided in the `format_dict`.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile_{foo}.foobar", filename_affix = "_extrabar", format_dict = {'foo': "oof"})
+        >>> foobar_templater.use()
+        'foo/bar/myfile_oof_extrabar.foobar'
+
+        """
+        path = self.get_directory_aspathlib() / self._get_combined_template_affix()
         if self._altsuffix_name is not None:
             if self._altsuffix_append:
                 suffix = self._suffix + self._altsuffix_value
@@ -470,10 +588,31 @@ class PathTemplater:
         new_obj = copy.deepcopy(self)
         new_obj._filename_template = new_template
         return new_obj
+    def remove_affix(self):
+        """
+        Generate a copy of the object with `filename_affix` replaced by
+        an empty string.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar", filename_affix="_extrabar")
+        >>> foobar_templater.use()
+        'foo/bar/myfile_extrabar.foobar'
+
+        >>> foobar_templater.remove_affix().use()
+        'foo/bar/myfile.foobar'
+
+        """
+        return self.new_affix("")
     def new_affix(self, new_affix):
         """
         Generate a copy of the object with `filename_affix` replaced by
         `new_affix`.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
+        >>> foobar_templater.use()
+        'foo/bar/myfile.foobar'
+
+        >>> foobar_templater.new_affix("_extrabar").use()
+        'foo/bar/myfile_extrabar.foobar'
         """
         new_obj = copy.deepcopy(self)
         new_obj._filename_affix = new_affix
@@ -515,6 +654,24 @@ class PathTemplater:
         """
         return dict(zip(end_labels,
             map(lambda x: self._end(x).use(), end_labels)))
+    def apply_format(self, **kwargs):
+        """
+        Generate a copy of the object with any placeholders in
+        filename template and affix replaced by any existing items
+        in the format dictionary. Any used items are removed from
+        the format dictionary.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile-{animal}-{food}.foobar",filename_affix='_{person}')
+        >>> foobar_templater.apply_format(animal='cat',person='george').use()
+        'foo/bar/myfile-cat-{food}_george.foobar'
+        """
+        new_obj = self.add_to_dict(**kwargs)
+        tracking_dict = _TrackingPartialDict(new_obj._format_dict)
+        new_obj._filename_template = string.Formatter().vformat(new_obj._filename_template, (),tracking_dict)
+        new_obj._filename_affix = string.Formatter().vformat(new_obj._filename_affix, (),tracking_dict)
+        for item in tracking_dict.used_items:
+            new_obj._format_dict.pop(item, None) # supplying default prevents KeyError for misisng items
+        return new_obj
     def pformat(self, **kwargs):
         """
         Generate the path while partially formatting with the named placeholders
