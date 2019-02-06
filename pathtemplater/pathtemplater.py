@@ -40,8 +40,10 @@ PathTemplater:
  filename template: "myfile"
  filename affix: ""
  suffix: ".foobar"
- alternate suffix: None "" (append? False)
  format dictionary: {}
+ top directory functions: []
+ alternate suffix functions: []
+ preset functions: []
  formatted: foo/bar/myfile.foobar
 
 ```
@@ -116,9 +118,19 @@ _PROGRAM_NAME = 'pathtemplater'
 #
 # -------------------------------------------------------------------------------
 
-_PROGRAM_VERSION = '1.0.0.dev3'
+_PROGRAM_VERSION = '1.0.0.dev4'
 # -------------------------------------------------------------------------------
 # ### Change log
+#
+# version 1.0.0.dev4 2019-02-06
+# : Removed some warnings for redundant calls, as these could happen
+#   when using presets designed to work with different starting states.
+# : Alt suffixes now entirely stored in function calls, and are directly
+#   applied as changes to suffix upon function call. Old behaviour did not
+#   apply these until use() was called, causing confusing behaviour when
+#   a suffix changes was stacked with an altsuffix call.
+# : Track topdir, alt_suffix and preset functions added to the object, and
+#   print these when repr() is called
 #
 # version 1.0.0.dev3 2019-02-01
 # : Altered method of adding presets, now supports arbitrary function calls.
@@ -132,8 +144,6 @@ _PROGRAM_VERSION = '1.0.0.dev3'
 # version 1.0.0dev1 2019-01-30
 # : Working version, partially tested with doctest
 # -------------------------------------------------------------------------------
-
-
 
 import pathlib
 import warnings
@@ -254,8 +264,12 @@ class PathTemplater:
     """
     def __init__(self, top_directories = None, alt_suffixes = None,
                  preset_formats = None):
+        self._extra_attrs = {'topdirs':[], 'alt_suffixes':[], 'presets':[]}
+            # for tracking extra functions added to this object
+            # using list so that items stay ordered to prevent doctest errors
+            # set would be more efficient but adding functions done sparingly
+            # and so performance hit is neglible
         self._reset_topdir()
-        self._reset_altsuffix()
         self._reset_dfs()
         if not top_directories:
             # if no top directories specified, use a default empty top directory
@@ -272,13 +286,32 @@ class PathTemplater:
             # one of these functions must be called after creating the object
             # to initalize the object
             for name, value in top_directories.items():
-                setattr(self, PathTemplater._get_settopdir_methodname(name),
+                PathTemplater._add_topdir_func(self, PathTemplater._get_settopdir_methodname(name),
                     PathTemplater._set_topdir_boundmethod(self, name, value))
         self.add_alt_suffixes(alt_suffixes)
         self.add_preset_formats(preset_formats)
+    @staticmethod
+    def _add_func(functype, obj, funcname, func):
+        """
+        Adds `func` to `obj` as `funcname` using `setattr()`, but adds
+        `funcname` to set given by `obj._extrattrs[functype]` for tracking
+        purposes.
+        """
+        if funcname not in obj._extra_attrs[functype]:
+            obj._extra_attrs[functype].append(funcname)
+        setattr(obj, funcname, func)
+    @staticmethod
+    def _add_topdir_func(obj, funcname, func):
+        PathTemplater._add_func('topdirs', obj, funcname, func)
+    @staticmethod
+    def _add_altsuffix_func(obj, funcname, func):
+        PathTemplater._add_func('alt_suffixes', obj, funcname, func)
+    @staticmethod
+    def _add_preset_func(obj, funcname, func):
+        PathTemplater._add_func('presets', obj, funcname, func)
     def add_alt_suffixes(self, alt_suffixes):
         """
-        Add `all_suffixes` to this object.
+        Add `alt_suffixes` to this object.
 
         >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
         >>> foobar_templater.add_alt_suffixes({'boobar':'.boobar', 'tar':'+.tar'})
@@ -290,13 +323,13 @@ class PathTemplater:
         """
         if alt_suffixes:
             for name, value in alt_suffixes.items():
-                if value[0]=='+':
+                if value.startswith('+'):
                     altsuffix_append = True
                     altsuffix = value[1:]
                 else:
                     altsuffix_append = False
                     altsuffix = value
-                setattr(self, PathTemplater._get_setfilesuffix_methodname(name),
+                PathTemplater._add_altsuffix_func(self, PathTemplater._get_setfilesuffix_methodname(name),
                     PathTemplater._set_altsuffix_boundmethod(self, name, altsuffix, altsuffix_append))
     def add_preset_formats(self,preset_formats):
         """
@@ -398,6 +431,19 @@ class PathTemplater:
         Traceback (most recent call last):
         ...
         ValueError: Preset value zipfile:([], {}) provided but could not find function zipfile
+
+        >>> print(repr(foobar_templater))
+        PathTemplater:
+         top directory: None "None"
+         directory: "bar"
+         filename template: "myfile_{animal}"
+         filename affix: ""
+         suffix: ".foobar"
+         format dictionary: {}
+         top directory functions: ['foobardir', 'boobardir']
+         alternate suffix functions: ['boobarfile', 'tarfile']
+         preset functions: ['cat_tar_in_foobar', 'yourfile_template', 'will_fail']
+         formatted: (uninitialized)
         """
         if preset_formats: # TODO add type checking
             for preset_name, format_dict in preset_formats.items():
@@ -420,7 +466,7 @@ class PathTemplater:
                         the_func = PathTemplater._preset_addtodict_withcalls_boundmethod
                     else:
                         the_func = PathTemplater._preset_addtodict_boundmethod
-                setattr(self, preset_name, the_func(self, **format_dict))
+                PathTemplater._add_preset_func(self, preset_name, the_func(self, **format_dict))
     def _reset_topdir(self):
         """
         Reset top directory settings.
@@ -428,13 +474,6 @@ class PathTemplater:
         self._topdir_name = None # internal name of topdir
         self._topdir_value = None # actual value of topdir, used for formatting paths
 
-    def _reset_altsuffix(self):
-        """
-        Reset any alternative suffix settings.
-        """
-        self._altsuffix_name = None # internal name of suffix
-        self._altsuffix_value = "" # actual value of suffix
-        self._altsuffix_append = False # whether to append suffix (otherwise replace)
     def _reset_dfs(self):
         """
         Reset directory, filename template, suffix, affix and format_sict settings.
@@ -518,8 +557,6 @@ class PathTemplater:
         Generate a copy of `cur_obj` with `_topdir_name, _topdir_value` member
         variables set to `topdir_name, topdir_value`.
         """
-        if cur_obj._topdir_name == topdir_name:
-            warnings.warn("setting top directory on PathTemplater that is already set to same top directory {}".format(topdir_name))
         new_obj = copy.deepcopy(cur_obj)
         new_obj._topdir_name = topdir_name
         new_obj._topdir_value = topdir_value
@@ -533,11 +570,12 @@ class PathTemplater:
     @staticmethod
     def _set_altsuffix(cur_obj, altsuffix_name, altsuffix_value, altsuffix_append):
         """
-        Generate a copy of `cur_obj` with `_altsuffix_name, _altsuffix_value, _altsuffix_append`
-        member   set to `altsuffix_name, altsuffix_value, altsuffix_append`.
+        Generate a copy of `cur_obj` with `suffix` changed/appended with
+        `altsuffix_value` depending on boolean `altsuffix_append`.
+        Matching with topdir name is also performed. If `altsuffix_name` is
+        the same as a topdir name, top directory is set to that directory
+        before suffix is changed.
         """
-        if cur_obj._altsuffix_name == altsuffix_name:
-            warnings.warn("setting suffix on PathTemplater that is already set to same suffix {}".format(suffix_name))
         new_obj = None
         # suffix and topdir matching...
         if cur_obj._topdir_name != altsuffix_name:
@@ -550,9 +588,10 @@ class PathTemplater:
                 new_obj = set_topdir_method()
         if new_obj is None: # otherwise just create object copy
             new_obj = copy.deepcopy(cur_obj)
-        new_obj._altsuffix_name = altsuffix_name
-        new_obj._altsuffix_value = altsuffix_value
-        new_obj._altsuffix_append = altsuffix_append
+        if altsuffix_append:
+            new_obj._suffix += altsuffix_value
+        else:
+            new_obj._suffix = altsuffix_value
         return new_obj
     @staticmethod
     def _set_altsuffix_boundmethod(instance, altsuffix_name, altsuffix_value, altsuffix_append):
@@ -632,13 +671,7 @@ class PathTemplater:
 
         """
         path = self.get_directory_aspathlib() / self._get_combined_template_affix()
-        if self._altsuffix_name is not None:
-            if self._altsuffix_append:
-                suffix = self._suffix + self._altsuffix_value
-            else:
-                suffix = self._altsuffix_value
-        else:
-            suffix = self._suffix
+        suffix = self._suffix
         if suffix:
             path = path.with_suffix(''.join(path.suffixes) + suffix)
             # with_suffix replaces any existing suffix, this ensures we
@@ -718,12 +751,22 @@ class PathTemplater:
         new_obj._filename_template = new_obj._get_combined_template_affix()
         new_obj._filename_affix = ""
         return new_obj
-    def new_suffix(self, new_suffix):
+    def new_suffix(self, new_suffix, suffix_append = False):
         """
-        Generate a copy of the object with `suffix` replaced by `new_suffix`.
+        Generate a copy of the object with `suffix` replaced by `new_suffix`
+        (if `suffix_append` is `False`), or with `new_suffix` appended to
+        current suffix (if `suffix_append` is `True`).
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
+        >>> foobar_templater.new_suffix(".boobar").use()
+        'foo/bar/myfile.boobar'
+        >>> foobar_templater.new_suffix(".boo", True).use()
+        'foo/bar/myfile.foobar.boo'
+
         """
         new_obj = copy.deepcopy(self)
-        new_obj._suffix = new_suffix
+        if suffix_append: new_obj._suffix += new_suffix
+        else: new_obj._suffix = new_suffix
         return new_obj
     def no_suffix(self):
         """
@@ -827,13 +870,16 @@ class PathTemplater:
             (' filename template: "{}"', ["_filename_template"]),
             (' filename affix: "{}"', ["_filename_affix"]),
             (' suffix: "{}"', ["_suffix"]),
-            (' alternate suffix: {} "{}" (append? {})', ["_altsuffix_name", "_altsuffix_value", "_altsuffix_append"]),
-            (' format dictionary: {}', ["_format_dict"])
+            (' format dictionary: {}', ["_format_dict"]),
+            (' top directory functions: {[topdirs]}', ["_extra_attrs"]),
+            (' alternate suffix functions: {[alt_suffixes]}', ["_extra_attrs"]),
+            (' preset functions: {[presets]}', ["_extra_attrs"]),
         ]
         #return "\n".join(repr_format.format(self._getattrs(repr_values)) for repr_format,repr_values in repr_format_values)
         return "PathTemplater:\n"+ \
                "\n".join(repr_format.format(*map(lambda x: getattr(self,x),repr_values)) for repr_format,repr_values in repr_format_values)+ \
-               "\n formatted: "+str(self)
+               "\n formatted: "+ (str(self) if self._is_initialized() else '(uninitialized)')
+
 
 
 """
