@@ -118,9 +118,16 @@ _PROGRAM_NAME = 'pathtemplater'
 #
 # -------------------------------------------------------------------------------
 
-_PROGRAM_VERSION = '1.0.0.dev4'
+_PROGRAM_VERSION = '1.0.0.dev5'
 # -------------------------------------------------------------------------------
 # ### Change log
+#
+# version 1.0.0.dev5 2019-02-07
+# : Added aspathlib(), aspathlib_unformatted() getters for directory, filename
+#   template etc., get_filename()
+# : Change get_directory() to return directory after formatting, removed
+#   get_directory_aspathlib() public function, equivalent behaviour is possible with
+#   aspathlib_unformatted().parent
 #
 # version 1.0.0.dev4 2019-02-06
 # : Removed some warnings for redundant calls, as these could happen
@@ -501,7 +508,7 @@ class PathTemplater:
         if self._is_initialized():
             raise ValueError("Cannot use create() with initialized PathTemplater")
         the_path = pathlib.Path(path)
-        directory = the_path.parent
+        directory = str(the_path.parent)
         suffix = "".join(the_path.suffixes) # want all suffixes combined
         filename_template = the_path.name.replace(suffix,"") # stem removes only 1 suffix
         return self.create_fromparts(directory, filename_template, suffix, filename_affix,
@@ -525,6 +532,94 @@ class PathTemplater:
         new_obj._filename_affix = filename_affix
         new_obj._format_dict.update(format_dict)
         return new_obj
+    @property
+    def topdirectory(self):
+        """
+        Get top directory.
+
+        >>> foobar_templater = PathTemplater({'foobar':'foo','boobar':'boo'}).create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.boobardir().topdirectory
+        'boo'
+
+        """
+        return self._topdir_value
+    @property
+    def topdirectory_name(self):
+        """
+        Get top directory.
+
+        >>> foobar_templater = PathTemplater({'foobar':'foo','boobar':'boo'}).create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.boobardir().topdirectory_name
+        'boobar'
+
+        """
+        return self._topdir_name
+    @property
+    def subdirectory(self):
+        """
+        Get subdirectory (i.e. directory excluding top directory).
+
+        >>> foobar_templater = PathTemplater().create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.subdirectory
+        'bar'
+
+        """
+        return self._directory
+    @property
+    def filename_template(self):
+        """
+        Get filename template.
+
+        >>> foobar_templater = PathTemplater().create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.filename_template
+        'myfile_{animal}'
+
+        """
+        return self._filename_template
+    @property
+    def filename_affix(self):
+        """
+        Get filename affix.
+
+        >>> foobar_templater = PathTemplater().create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.new_affix("_big").filename_affix
+        '_big'
+
+        """
+        return self._filename_affix
+    @property
+    def filename_template_affix(self):
+        """
+        Get filename template with affix appended
+
+        >>> foobar_templater = PathTemplater().create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.new_affix("_big").filename_template_affix
+        'myfile_{animal}_big'
+
+        """
+        return self._filename_template+self._filename_affix
+    @property
+    def suffix(self):
+        """
+        Get suffix (extension).
+
+        >>> foobar_templater = PathTemplater().create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.suffix
+        '.foobar'
+
+        """
+        return self._suffix
+    @property
+    def format_dict(self):
+        """
+        Get the format dictionary
+
+        >>> foobar_templater = PathTemplater().create("bar/myfile_{animal}.foobar")
+        >>> foobar_templater.add_to_dict(animal = "cat").format_dict
+        {'animal': 'cat'}
+
+        """
+        return self._format_dict
     @staticmethod
     def _is_funcparams_tuple(x):
         """
@@ -635,14 +730,10 @@ class PathTemplater:
     @staticmethod
     def _preset_expand_boundmethod(instance, **kwargs):
         return PathTemplater._bound_method(lambda self: PathTemplater.expand(self, partial = True, **kwargs), instance)
-    def get_directory_aspathlib(self):
+    def _get_directory_aspathlib(self):
         """
-        Generate a path consisting only of the  directory and directory
+        Generate a path consisting only of the top directory and directory
         components of the path as a pathlib.Path.
-
-        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
-        >>> foobar_templater.get_directory_aspathlib() == pathlib.Path('foo/bar')
-        True
 
         """
         if not self._is_initialized():
@@ -651,15 +742,36 @@ class PathTemplater:
         return path / self._directory
     def get_directory(self):
         """
-        Generate a path consisting only of the  directory and directory
-        components of the path as a string.
+        Generate a path consisting only of parent component of the formatted
+        path.
 
-        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
-        >>> foobar_templater.get_directory()
-        'foo/bar'
+        >>> foobar_templater = PathTemplater().create("foo/bar/{animal}/myfile.foobar")
+        >>> foobar_templater.add_to_dict(animal = 'cat').get_directory()
+        'foo/bar/cat'
 
         """
-        return self.get_directory_aspathlib().__str__()
+        return self.aspathlib().parent.__str__()
+    def get_filename(self):
+        """
+        Generate a path consisting of the name component of the formatted
+        path (including suffix).
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile_{animal}.foobar")
+        >>> foobar_templater.add_to_dict(animal = 'cat').get_filename()
+        'myfile_cat.foobar'
+
+        """
+        return self.aspathlib().name.__str__()
+    def _use(self, format = True):
+        path = self._get_directory_aspathlib() / self.filename_template_affix
+        suffix = self._suffix
+        if suffix:
+            path = path.with_suffix(''.join(path.suffixes) + suffix)
+            # with_suffix replaces any existing suffix, this ensures we
+            # add to any existing suffix on template
+        template = path.__str__()
+        if format: return string.Formatter().vformat(template, (), _PartialDict(self._format_dict))
+        return template
     def use(self):
         """
         Generates the path as a string, replacing any wildcards for which
@@ -670,16 +782,29 @@ class PathTemplater:
         'foo/bar/myfile_oof_extrabar.foobar'
 
         """
-        path = self.get_directory_aspathlib() / self._get_combined_template_affix()
-        suffix = self._suffix
-        if suffix:
-            path = path.with_suffix(''.join(path.suffixes) + suffix)
-            # with_suffix replaces any existing suffix, this ensures we
-            # add to any existing suffix on template
-        template = path.__str__()
-        return string.Formatter().vformat(template, (), _PartialDict(self._format_dict))
-    def _get_combined_template_affix(self):
-        return self._filename_template+self._filename_affix
+        return self._use(format = True)
+    def aspathlib(self):
+        """
+        Generates the path using `use()` and returns result as `pathlib.Path`.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile_{animal}.foobar")
+        >>> foobar_templater.add_to_dict(animal = 'cat').aspathlib() == pathlib.Path('foo/bar/myfile_cat.foobar')
+        True
+        """
+        return pathlib.Path(self.use())
+    def aspathlib_unformatted(self):
+        """
+        Generates the path using `use()` and returns result as `pathlib.Path`.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile_{animal}.foobar")
+        >>> foobar_templater.add_to_dict(animal = 'cat').aspathlib_unformatted() == pathlib.Path('foo/bar/myfile_{animal}.foobar')
+        True
+        >>> foobar_templater.add_to_dict(animal = 'cat').aspathlib_unformatted().parent.__str__()
+        'foo/bar'
+        >>> foobar_templater.add_to_dict(animal = 'cat').aspathlib_unformatted().name.__str__()
+        'myfile_{animal}.foobar'
+        """
+        return pathlib.Path(self._use(format = False))
     def add_to_dict(self,**kwargs):
         """
         Generate a copy of the object that contains `**kwargs` added to the
@@ -748,7 +873,7 @@ class PathTemplater:
         `filename_affix` could be added.
         """
         new_obj = copy.deepcopy(self)
-        new_obj._filename_template = new_obj._get_combined_template_affix()
+        new_obj._filename_template = new_obj.filename_template_affix
         new_obj._filename_affix = ""
         return new_obj
     def new_suffix(self, new_suffix, suffix_append = False):

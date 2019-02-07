@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="pathtemplater",
-    version="1.0.0.dev4",
+    version="1.0.0.dev5",
     author="Tet Woo Lee",
     author_email="developer@twlee.nz",
     description="Package for templating paths, useful helper package for Snakemake",
