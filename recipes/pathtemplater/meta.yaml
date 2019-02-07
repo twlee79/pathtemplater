@@ -1,8 +1,8 @@
 {% set name = "pathtemplater" %}
-{% set version = "1.0.0.dev6" %}
+{% set version = "1.0.0.dev7" %}
 {% set file_ext = "tar.gz" %}
 {% set hash_type = "sha256" %}
-{% set hash_value = "527d3e7022d2c72180090a42cce8af470f31e5e9a21b92e82f74b6f70ba88934" %}
+{% set hash_value = "7565fe5e41d32e22a52d1d9f470039b73774acf2d7afb9a756c02bb27b11c707" %}
 
 package:
   name: '{{ name|lower }}'

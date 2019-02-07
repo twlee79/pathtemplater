@@ -118,9 +118,12 @@ _PROGRAM_NAME = 'pathtemplater'
 #
 # -------------------------------------------------------------------------------
 
-_PROGRAM_VERSION = '1.0.0.dev6'
+_PROGRAM_VERSION = '1.0.0.dev7'
 # -------------------------------------------------------------------------------
 # ### Change log
+#
+# version 1.0.0.dev7 2019-02-07
+# : Bugfix in no_suffix()
 #
 # version 1.0.0.dev6 2019-02-07
 # : Changed altsuffix syntax: No longer automatically selects top directory of
@@ -912,9 +915,13 @@ class PathTemplater:
     def no_suffix(self):
         """
         Generate a copy of the object with no `suffix`.
+
+        >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
+        >>> foobar_templater.no_suffix().use()
+        'foo/bar/myfile'
+
         """
-        return self.new_suffix(None)
-        return new_obj
+        return self.new_suffix("")
     def expand_ends(self):
         """
         Generate a dict mapping each `end_label` to its path, e.g.
