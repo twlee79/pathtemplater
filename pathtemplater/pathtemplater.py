@@ -118,9 +118,15 @@ _PROGRAM_NAME = 'pathtemplater'
 #
 # -------------------------------------------------------------------------------
 
-_PROGRAM_VERSION = '1.0.0.dev5'
+_PROGRAM_VERSION = '1.0.0.dev6'
 # -------------------------------------------------------------------------------
 # ### Change log
+#
+# version 1.0.0.dev6 2019-02-07
+# : Changed altsuffix syntax: No longer automatically selects top directory of
+#   same name. Use `dir/.suffix` syntax to achieve this instead.
+# : new_suffix now allows the use of +.suffix syntax
+# : Fix deprecated warning for Iterable
 #
 # version 1.0.0.dev5 2019-02-07
 # : Added aspathlib(), aspathlib_unformatted() getters for directory, filename
@@ -158,7 +164,7 @@ import copy
 import types
 import string
 import itertools
-import collections
+import typing
 
 class _AsIsFormat:
     """
@@ -318,7 +324,9 @@ class PathTemplater:
         PathTemplater._add_func('presets', obj, funcname, func)
     def add_alt_suffixes(self, alt_suffixes):
         """
-        Add `alt_suffixes` to this object.
+        Add `alt_suffixes` to this object, each is in the format of
+        `(dir/)(+).suffix` where `dir` is an optional top directory name,
+        and `+` is an optional flag specifying that suffix should be appended.
 
         >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
         >>> foobar_templater.add_alt_suffixes({'boobar':'.boobar', 'tar':'+.tar'})
@@ -330,14 +338,19 @@ class PathTemplater:
         """
         if alt_suffixes:
             for name, value in alt_suffixes.items():
-                if value.startswith('+'):
+                if '/' in value:
+                    directory, suffix = value.split('/',1)
+                else:
+                    directory = None
+                    suffix = value
+                if suffix.startswith('+'):
                     altsuffix_append = True
-                    altsuffix = value[1:]
+                    altsuffix = suffix[1:]
                 else:
                     altsuffix_append = False
-                    altsuffix = value
+                    altsuffix = suffix
                 PathTemplater._add_altsuffix_func(self, PathTemplater._get_setfilesuffix_methodname(name),
-                    PathTemplater._set_altsuffix_boundmethod(self, name, altsuffix, altsuffix_append))
+                    PathTemplater._set_altsuffix_boundmethod(self, name, altsuffix, altsuffix_append, directory))
     def add_preset_formats(self,preset_formats):
         """
         Add `preset_formats` to this object, in the format
@@ -399,11 +412,12 @@ class PathTemplater:
         >>> foobar_templater.foobardir().use()
         'foo/bar/myfile_{animal}.foobar'
 
-        Add alternate suffixes to the templater. This allows `.boobar` suffix to
-        be used by calling `boobarfile()`. Since this suffix corresponds to the
-        `boobar` top directory, using it will alter top directory to that
-        defined by `boobardir()`. `tarfile` will append a `.tar` suffix.
-        >>> foobar_templater.add_alt_suffixes({'boobar':'.boobar', 'tar':'+.tar'})
+        Add alternate suffixes to the templater. The syntax optionally allows
+        a top directory to be specified by name at the same time (`dir/`),
+        and/or the suffix to be appended (`+.suffix`).
+        >>> foobar_templater.add_alt_suffixes({'txt':'.txt', 'boobar':'boobar/.boobar', 'tar':'+.tar'})
+        >>> foobar_templater.foobardir().txtfile().use()
+        'foo/bar/myfile_{animal}.txt'
         >>> foobar_templater.boobarfile().use()
         'boo/bar/myfile_{animal}.boobar'
         >>> foobar_templater.foobardir().tarfile().use()
@@ -448,7 +462,7 @@ class PathTemplater:
          suffix: ".foobar"
          format dictionary: {}
          top directory functions: ['foobardir', 'boobardir']
-         alternate suffix functions: ['boobarfile', 'tarfile']
+         alternate suffix functions: ['txtfile', 'boobarfile', 'tarfile']
          preset functions: ['cat_tar_in_foobar', 'yourfile_template', 'will_fail']
          formatted: (uninitialized)
         """
@@ -458,7 +472,7 @@ class PathTemplater:
                 have_iterable = False
                 have_callable = False
                 for format_value in format_dict.values():
-                    if isinstance(format_value, collections.Iterable) and not isinstance(format_value, str):
+                    if isinstance(format_value, typing.Iterable) and not isinstance(format_value, str):
                         # ([],{}) -> specifies funciton to call
                         if PathTemplater._is_funcparams_tuple(format_value):
                             have_callable = True
@@ -663,24 +677,20 @@ class PathTemplater:
         """
         return PathTemplater._bound_method(lambda self: PathTemplater._set_topdir(self, topdir_name, topdir_value), instance)
     @staticmethod
-    def _set_altsuffix(cur_obj, altsuffix_name, altsuffix_value, altsuffix_append):
+    def _set_altsuffix(cur_obj, altsuffix_name, altsuffix_value, altsuffix_append, topdirectory):
         """
         Generate a copy of `cur_obj` with `suffix` changed/appended with
         `altsuffix_value` depending on boolean `altsuffix_append`.
-        Matching with topdir name is also performed. If `altsuffix_name` is
-        the same as a topdir name, top directory is set to that directory
-        before suffix is changed.
+        If `topdirectory` is not `None`, top directory is set to that top
+        directory (by name) before suffix is changed.
         """
         new_obj = None
-        # suffix and topdir matching...
-        if cur_obj._topdir_name != altsuffix_name:
-            # if new altsuffix_name is not the same as current topdir_name...
-            set_topdir_method = getattr(cur_obj, PathTemplater._get_settopdir_methodname(altsuffix_name),None)
-            if set_topdir_method is not None:
-                # and, we have a method in the object to set topdir with same name
-                # e.g. logdir() when altsuffix_name is log
-                # call that method to generate a new_obj with suffix changed appropriately
-                new_obj = set_topdir_method()
+        if topdirectory is not None and cur_obj._topdir_name != topdirectory:
+            # if topdirectory is provided and we aren't already in that directory
+            set_topdir_method = getattr(cur_obj, PathTemplater._get_settopdir_methodname(topdirectory),None)
+            if set_topdir_method is None:
+                raise ValueError('Attempting to set top directory to invalid value {} in alt suffix call'.format(topdirectory))
+            new_obj = set_topdir_method() # change directory to that top directory
         if new_obj is None: # otherwise just create object copy
             new_obj = copy.deepcopy(cur_obj)
         if altsuffix_append:
@@ -689,11 +699,11 @@ class PathTemplater:
             new_obj._suffix = altsuffix_value
         return new_obj
     @staticmethod
-    def _set_altsuffix_boundmethod(instance, altsuffix_name, altsuffix_value, altsuffix_append):
+    def _set_altsuffix_boundmethod(instance, altsuffix_name, altsuffix_value, altsuffix_append, topdirectory):
         """
-        Generate bound method of `instance._set_suffix(altsuffix_name, altsuffix_value, altsuffix_append)`.
+        Generate bound method of `instance._set_suffix(altsuffix_name, altsuffix_value, altsuffix_append, topdirectory)`.
         """
-        return PathTemplater._bound_method(lambda self: PathTemplater._set_altsuffix(self, altsuffix_name, altsuffix_value, altsuffix_append), instance)
+        return PathTemplater._bound_method(lambda self: PathTemplater._set_altsuffix(self, altsuffix_name, altsuffix_value, altsuffix_append, topdirectory), instance)
     def _add_to_dict_with_calls(self,**kwargs):
         """
         Generate a copy of the object that contains `**kwargs` added to the
@@ -880,16 +890,22 @@ class PathTemplater:
         """
         Generate a copy of the object with `suffix` replaced by `new_suffix`
         (if `suffix_append` is `False`), or with `new_suffix` appended to
-        current suffix (if `suffix_append` is `True`).
+        current suffix (if `suffix_append` is `True`). If the first character
+        of `new_suffix` is a `+` character, `suffix_append` is set to `True`.
 
         >>> foobar_templater = PathTemplater().create("foo/bar/myfile.foobar")
         >>> foobar_templater.new_suffix(".boobar").use()
         'foo/bar/myfile.boobar'
         >>> foobar_templater.new_suffix(".boo", True).use()
         'foo/bar/myfile.foobar.boo'
+        >>> foobar_templater.new_suffix("+.boo").use()
+        'foo/bar/myfile.foobar.boo'
 
         """
         new_obj = copy.deepcopy(self)
+        if new_suffix.startswith('+'):
+            suffix_append = True
+            new_suffix = new_suffix[1:]
         if suffix_append: new_obj._suffix += new_suffix
         else: new_obj._suffix = new_suffix
         return new_obj
@@ -898,12 +914,6 @@ class PathTemplater:
         Generate a copy of the object with no `suffix`.
         """
         return self.new_suffix(None)
-    def reset_altsuffix(self):
-        """
-        Generate a copy of the object with alternative suffix reset.
-        """
-        new_obj = copy.deepcopy(self)
-        new_obj._reset_altsuffix()
         return new_obj
     def expand_ends(self):
         """
@@ -975,7 +985,7 @@ class PathTemplater:
             # generator that yields keyx: [item1, item2, item3] expanded
             # to [(keyx, item1), (keyx: item2), (keyx: item3)]
             for key, value in kwargs.items():
-                if isinstance(value, str) or not isinstance(value, collections.Iterable):
+                if isinstance(value, str) or not isinstance(value, typing.Iterable):
                     yield [(key, value)]
                 else:
                     yield [(key, item) for item in value]
